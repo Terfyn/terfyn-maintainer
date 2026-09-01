@@ -1,0 +1,21 @@
+apiVersion: agentic.dev/v0
+kind: Project
+metadata:
+  name: terfyn-maintainer
+spec:
+  # main.agent is discovered automatically; only YAML resources are imported.
+  imports:
+    - ./tools/workspace.yaml
+    - ./tools/github.yaml
+    - ./tools/git.yaml
+    - ./policies/triage-readonly.yaml
+    - ./policies/coding-agent.yaml
+    - ./policies/reviewer.yaml
+    - ./policies/publishing.yaml
+  defaults:
+    model: mock/gpt-4
+    policy: publishing
+  providers:
+    models:
+      mock:
+        type: mock

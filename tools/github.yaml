@@ -1,0 +1,18 @@
+apiVersion: agentic.dev/v0
+kind: Tool
+metadata:
+  name: github
+spec:
+  # Terfyn's native GitHub adapter (v0.2.0). Live calls use GITHUB_TOKEN;
+  # post_comment posts for real when live context is present, else simulated.
+  type: native
+  safety:
+    trusted: true
+    sideEffects: true
+  operations:
+    pull_request.get:
+      effects: [github.read]
+    pull_request.diff:
+      effects: [github.read]
+    pull_request.post_comment:
+      effects: [github.write]

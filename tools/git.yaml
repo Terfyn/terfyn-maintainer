@@ -1,0 +1,24 @@
+apiVersion: agentic.dev/v0
+kind: Tool
+metadata:
+  name: git
+spec:
+  # The one custom tool (DESIGN.md §9): branch publication, which Terfyn does not
+  # provide natively. MCP-over-stdio to the terfyn-git-publish binary built from
+  # this repo (cmd/terfyn-git-publish), rooted at the same checkout as the
+  # workspace sandbox. Only two operations exist — no push_main, force_push,
+  # delete_branch, or merge.
+  type: mcp
+  mcp:
+    transport: stdio
+    command: terfyn-git-publish
+  safety:
+    trusted: true
+    sideEffects: true
+  operations:
+    create_branch:
+      effects: [repository.write]
+    push_branch:
+      # The publication boundary. Modeled as network.write (the approval-gated
+      # class); the local ref write is create_branch's repository.write.
+      effects: [network.write]
