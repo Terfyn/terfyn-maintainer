@@ -26,14 +26,18 @@ agent Triager {
     policy triage-readonly
 
     instructions """
-    You are the triage agent. You receive a FixTask: a GitHub repo, an issue number,
-    and a one-line task. Read the relevant code (and run tests to observe current
-    behavior) and produce a CodingState that seeds the implementation: preserve the
-    task, set approved=false, leave feedback empty, and put a concise plan for the fix
-    in summary. Do not modify anything.
+    You are the triage agent. You receive a FixTask: a GitHub repo, an issue/PR number,
+    and a one-line task. FIRST fetch the issue/PR context with github.pull_request.get
+    (and its diff) using the provided owner, repo, and number, so your plan reflects the
+    actual issue — not just the one-line task. Then read the relevant code (and run tests
+    to observe current behavior) and produce a CodingState that seeds the implementation:
+    preserve the task, set approved=false, leave feedback empty, and put a concise plan
+    for the fix in summary. Do not modify anything.
     """
 
     grants {
+        tool.github.pull_request.get
+        tool.github.pull_request.diff
         tool.workspace.read_file
         tool.workspace.run_tests
     }
@@ -101,6 +105,16 @@ workflow FixPullRequest(input: FixTask) -> CodingState
     while !state.approved limit 3 {
         implementation = Implementer(state)
         state          = Reviewer(implementation)
+    }
+
+    // Terminate as NOT publishable if the Reviewer never approved within the bounded
+    // attempts. `while … limit 3` bounds the iteration count but does NOT fail on
+    // exhaustion — the loop exits successfully whether or not the condition was met —
+    // so without this guard a thrice-rejected patch would fall through to publication
+    // (human-gated, but still proposed). Return the rejected state instead; the run's
+    // output shows approved=false and nothing was pushed or commented.
+    if !state.approved {
+        return state
     }
 
     // ── publication boundary — both calls are approvals.requiredFor ──

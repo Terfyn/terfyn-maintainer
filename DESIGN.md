@@ -115,13 +115,12 @@ As of v0.3.0 there is nothing left to build: the project is one inline `main.age
                  │  GitHub issue │
                  │    / PR #123  │
                  └───────┬───────┘
-                         │  github.pull_request.get   (native, GITHUB_TOKEN)
                          ▼
-                  ┌─────────────┐
-                  │   Triager   │   github.read + workspace.read
-                  │  read only  │   (understand issue & code, produce a plan)
+                  ┌─────────────┐   github.read + workspace.read
+                  │   Triager   │   fetches the issue/PR (github.pull_request.get,
+                  │  read only  │   native, GITHUB_TOKEN) + reads code → a plan
                   └──────┬──────┘
-                         │  git.create_branch  (custom tool, §9)
+                         │  git.create_branch  (native)
                          ▼
                 ┌────────────────┐   ┌──── while !approved limit 3 ────┐
              ┌─►│  Implementer   │   workspace.read/write + process.exec
@@ -132,8 +131,8 @@ As of v0.3.0 there is nothing left to build: the project is one inline `main.age
              │   │  Reviewer   │    workspace.read + process.exec
              │   │ read + test │    (read_file, run_tests — NO write_file)
              │   └──────┬──────┘
-             │     rejected
-             └──────────┘  approved
+             │     rejected           still rejected after 3 rounds
+             └──────────┘  approved   ──────────────────────────►  return (NOT published)
                          ▼
                 ┌─────────────────┐   git.push_branch + github.pull_request.post_comment
                 │ HUMAN APPROVAL  │   → approvals.requiredFor → run suspends (interrupted, exit 0)
@@ -247,21 +246,28 @@ agent Reviewer {
 
 ```agent
 workflow FixPullRequest(input: FixTask) -> CodingState
+    policy publishing
     effects {
-        github.read, workspace.read, workspace.write,
+        github.read, github.write, workspace.read, workspace.write,
         process.exec, repository.write, network.write
     }
 {
-    issue = github.pull_request.get(
-        owner: input.owner, repo: input.repo, number: input.number)
-    plan  = Triager(input)
+    state = Triager(input)            // Triager fetches the issue/PR itself (github.read grant)
 
     git.create_branch(name: "terfyn/fix-${input.number}")
 
-    state = { task: input.task, plan: plan, approved: false }
     while !state.approved limit 3 {
         implementation = Implementer(state)
         state          = Reviewer(implementation)
+    }
+
+    // Reviewer never approved within the bounded attempts → terminate as
+    // NOT publishable. `while … limit N` bounds the iteration count but does NOT
+    // fail on exhaustion (the loop exits successfully whether or not the condition
+    // was met), so this guard is REQUIRED — without it a thrice-rejected patch falls
+    // through to the publication boundary (human-gated, but still proposed).
+    if !state.approved {
+        return state
     }
 
     // ── publication boundary — both calls are approvals.requiredFor ──
@@ -282,6 +288,14 @@ workflow FixPullRequest(input: FixTask) -> CodingState
 `Reviewer ≤ 3 per run`, and it is a hard runtime bound: there is no silent fourth attempt.
 The `effects { … }` clause is the workflow's declared effect envelope; `plan` checks the
 body's reachable effects against it.
+
+> **`while` bounds iterations; it does not gate on success.** In Terfyn, `while cond limit N`
+> means "run the body at most N times," not "satisfy `cond` within N attempts or fail" — on
+> exhaustion the loop just exits. So publishing MUST be guarded by an explicit
+> `if !state.approved { return state }`; the `limit` alone would publish a rejected patch. This
+> is a place where the execution semantics and an author's likely mental model diverge — a
+> `retry until cond limit N { … }` construct with explicit failure-on-exhaustion semantics
+> would remove the footgun. (Candidate Terfyn feature request, in the spirit of §13.)
 
 ---
 
