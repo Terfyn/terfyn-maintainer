@@ -1,6 +1,6 @@
 # terfyn-maintainer
 
-A guarded autonomous PR fixer built on [Terfyn](https://github.com/Terfyn/terfyn) **v0.3.0** —
+A guarded autonomous PR fixer built on [Terfyn](https://github.com/Terfyn/terfyn) **v0.3.1** —
 Codex/Claude Code, but the dangerous parts are structurally bounded and reviewable
 **before** execution.
 
@@ -12,14 +12,16 @@ agent can exercise — and the runtime enforces that boundary at dispatch, not v
 prompt.
 
 **There is no code.** The whole program — agents, workflow, tools, and policies — is one
-declarative [`main.agent`](main.agent) file (Terfyn v0.3.0 inline declarations). Git
-branch/push is Terfyn's native adapter; the capability guarantee is a declarative test.
+declarative [`main.agent`](main.agent) file (Terfyn v0.3.0 inline declarations), with the
+agents' prompts in [`prompts/`](prompts). Git branch/push is Terfyn's native adapter; the
+bounded retry is `retry until … limit 3`; the capability guarantee is a declarative test.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| [`main.agent`](main.agent) | the entire program: Triager / Implementer / Reviewer, the bounded `FixPullRequest` workflow, and the inline `tool` + `policy` declarations |
+| [`main.agent`](main.agent) | the entire program: Triager / Implementer / Reviewer, the bounded `FixPullRequest` workflow (`retry until … limit 3`), and the inline `tool` + `policy` declarations |
+| [`prompts/`](prompts) | the agents' prompts (`triager.md` / `implementer.md` / `reviewer.md`), loaded via `instructions file("…")` |
 | [`schemas/`](schemas) | `FixTask` (input) and `CodingState` (loop state) |
 | [`tests/capabilities.yaml`](tests/capabilities.yaml) | declarative capability invariants checked by `terfyn test` |
 | [`project.yaml`](project.yaml) | provider + defaults (nothing to import — it's all inline) |
@@ -29,7 +31,7 @@ branch/push is Terfyn's native adapter; the capability guarantee is a declarativ
 ## Install
 
 ```bash
-go install github.com/Terfyn/terfyn/cmd/terfyn@v0.3.0   # the engine (Go ≥ 1.25) — the only install
+go install github.com/Terfyn/terfyn/cmd/terfyn@v0.3.1   # the engine (Go ≥ 1.25) — the only install
 ```
 
 No project binaries: the workspace, GitHub, and git tools are all native to Terfyn.

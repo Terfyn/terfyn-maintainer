@@ -6,9 +6,10 @@
 // boundary (git.push_branch + github.pull_request.post_comment are approvals.requiredFor).
 //
 // The whole program — agents, workflow, tools, and policies — is one .agent file
-// (Terfyn v0.3.0 inline declarations, ADR 005). Only the two JSON schemas and
-// project.yaml sit beside it. No custom code: git branch/push is Terfyn's native
-// adapter (#331).
+// (Terfyn v0.3.0 inline declarations, ADR 005). Agent prompts live in prompts/*.md
+// via `instructions file(...)` (v0.3.1, #360); the two JSON schemas and project.yaml
+// sit beside it. No custom code: git branch/push is Terfyn's native adapter (#331),
+// and the bounded implement→review retry uses `retry until … limit 3` (v0.3.1, #361).
 //
 //   terfyn validate
 //   terfyn plan
@@ -25,15 +26,7 @@ agent Triager {
     model mock/gpt-4
     policy triage-readonly
 
-    instructions """
-    You are the triage agent. You receive a FixTask: a GitHub repo, an issue/PR number,
-    and a one-line task. FIRST fetch the issue/PR context with github.pull_request.get
-    (and its diff) using the provided owner, repo, and number, so your plan reflects the
-    actual issue — not just the one-line task. Then read the relevant code (and run tests
-    to observe current behavior) and produce a CodingState that seeds the implementation:
-    preserve the task, set approved=false, leave feedback empty, and put a concise plan
-    for the fix in summary. Do not modify anything.
-    """
+    instructions file("prompts/triager.md")
 
     grants {
         tool.github.pull_request.get
@@ -50,13 +43,7 @@ agent Implementer {
     model mock/gpt-4
     policy coding-agent
 
-    instructions """
-    You are the implementation agent. You receive a CodingState describing the task and,
-    on later attempts, review feedback. Implement the change in the workspace: inspect
-    files, modify files, and run tests. Address any review feedback first. When finished,
-    return the complete CodingState — preserve the task, record a concise summary of what
-    you changed, and do not claim tests passed unless you actually ran them successfully.
-    """
+    instructions file("prompts/implementer.md")
 
     grants {
         tool.workspace.read_file
@@ -72,13 +59,7 @@ agent Reviewer {
     model mock/gpt-4
     policy reviewer
 
-    instructions """
-    You are the independent code reviewer. Inspect the Implementer's work and decide
-    whether it correctly satisfies the task. You may inspect files and run tests. You
-    must not modify the workspace. Set approved=true only if acceptable; otherwise set
-    approved=false and populate feedback with concrete findings for the next attempt.
-    Return the complete CodingState and preserve the task.
-    """
+    instructions file("prompts/reviewer.md")
 
     grants {
         tool.workspace.read_file
@@ -102,22 +83,16 @@ workflow FixPullRequest(input: FixTask) -> CodingState
 
     git.create_branch(name: "terfyn/fix-${input.number}")
 
-    while !state.approved limit 3 {
+    // Bounded retry: run implement→review up to 3 times and proceed only once the
+    // Reviewer approves. On exhaustion (3 rejected rounds) `retry until` fails the run
+    // deterministically — it does NOT fall through to publication. This is the #361
+    // construct that replaces the earlier `while … limit 3` + `if !approved` guard.
+    retry until state.approved limit 3 {
         implementation = Implementer(state)
         state          = Reviewer(implementation)
     }
 
-    // Terminate as NOT publishable if the Reviewer never approved within the bounded
-    // attempts. `while … limit 3` bounds the iteration count but does NOT fail on
-    // exhaustion — the loop exits successfully whether or not the condition was met —
-    // so without this guard a thrice-rejected patch would fall through to publication
-    // (human-gated, but still proposed). Return the rejected state instead; the run's
-    // output shows approved=false and nothing was pushed or commented.
-    if !state.approved {
-        return state
-    }
-
-    // ── publication boundary — both calls are approvals.requiredFor ──
+    // ── publication boundary — reached only when approved; both calls are approvals.requiredFor ──
     git.push_branch(branch: "terfyn/fix-${input.number}")
     github.pull_request.post_comment(
         owner: input.owner,
