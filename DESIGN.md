@@ -3,7 +3,7 @@
 > Codex/Claude Code, but the dangerous parts are structurally bounded and reviewable
 > **before** execution.
 
-**Status:** Draft · **Target:** v1 (single-repo, single-issue) · **Built on:** [Terfyn **v0.3.0**](https://github.com/Terfyn/terfyn) (`go install github.com/Terfyn/terfyn/cmd/terfyn@v0.3.0`)
+**Status:** Draft · **Target:** v1 (single-repo, single-issue) · **Built on:** [Terfyn **v0.3.1**](https://github.com/Terfyn/terfyn) (`go install github.com/Terfyn/terfyn/cmd/terfyn@v0.3.1`)
 
 > **v0.3.0 update.** The project is now **zero-code**: the whole program — agents, workflow,
 > tools, policies — is one inline `main.agent` (ADR 005, #333); git branch/push is Terfyn's
@@ -196,25 +196,21 @@ cannot** — is a grant the Reviewer does not hold, exactly as in the flagship e
 agent Triager {
     model    anthropic/claude-sonnet-4-5
     policy   triage-readonly
-    instructions """
-    Read the issue and the relevant code. Produce a concise plan for the fix.
-    Do not modify anything.
-    """
+    instructions file("prompts/triager.md")   // prompts live as files (v0.3.1, #360)
     grants {
+        tool.github.pull_request.get           // fetches the issue/PR itself
+        tool.github.pull_request.diff
         tool.workspace.read_file
         tool.workspace.run_tests
     }
     input  FixTask
-    output FixPlan
+    output CodingState
 }
 
 agent Implementer {
     model    anthropic/claude-sonnet-4-5
     policy   coding-agent
-    instructions """
-    Implement the requested change in the workspace. You may read files, write
-    files, and run tests. If review feedback is present, address it first.
-    """
+    instructions file("prompts/implementer.md")
     grants {
         tool.workspace.read_file
         tool.workspace.write_file    // ← write
@@ -227,11 +223,7 @@ agent Implementer {
 agent Reviewer {
     model    anthropic/claude-sonnet-4-5
     policy   reviewer
-    instructions """
-    Independently review the implementation. You may read files and run tests.
-    You must not modify the workspace. Set approved=true only if acceptable;
-    otherwise populate feedback with concrete findings.
-    """
+    instructions file("prompts/reviewer.md")
     grants {
         tool.workspace.read_file
         tool.workspace.run_tests
@@ -256,21 +248,15 @@ workflow FixPullRequest(input: FixTask) -> CodingState
 
     git.create_branch(name: "terfyn/fix-${input.number}")
 
-    while !state.approved limit 3 {
+    // Bounded retry: run implement→review up to 3 times, proceed only when approved.
+    // On exhaustion (3 rejected rounds) `retry until` fails the run deterministically —
+    // it does NOT fall through to publication.
+    retry until state.approved limit 3 {
         implementation = Implementer(state)
         state          = Reviewer(implementation)
     }
 
-    // Reviewer never approved within the bounded attempts → terminate as
-    // NOT publishable. `while … limit N` bounds the iteration count but does NOT
-    // fail on exhaustion (the loop exits successfully whether or not the condition
-    // was met), so this guard is REQUIRED — without it a thrice-rejected patch falls
-    // through to the publication boundary (human-gated, but still proposed).
-    if !state.approved {
-        return state
-    }
-
-    // ── publication boundary — both calls are approvals.requiredFor ──
+    // ── publication boundary — reached only when approved; both calls are approvals.requiredFor ──
     git.push_branch(branch: "terfyn/fix-${input.number}")
     github.pull_request.post_comment(
         owner: input.owner, repo: input.repo, number: input.number,
@@ -289,13 +275,16 @@ workflow FixPullRequest(input: FixTask) -> CodingState
 The `effects { … }` clause is the workflow's declared effect envelope; `plan` checks the
 body's reachable effects against it.
 
-> **`while` bounds iterations; it does not gate on success.** In Terfyn, `while cond limit N`
-> means "run the body at most N times," not "satisfy `cond` within N attempts or fail" — on
-> exhaustion the loop just exits. So publishing MUST be guarded by an explicit
-> `if !state.approved { return state }`; the `limit` alone would publish a rejected patch. This
-> is a place where the execution semantics and an author's likely mental model diverge — a
-> `retry until cond limit N { … }` construct with explicit failure-on-exhaustion semantics
-> would remove the footgun. (Candidate Terfyn feature request, in the spirit of §13.)
+> **`retry until` gates on success (v0.3.1, #361).** An earlier version used
+> `while !approved limit 3` followed by an `if !state.approved { return state }` guard,
+> because `while cond limit N` means "run the body at most N times," not "satisfy `cond`
+> within N attempts or fail" — on exhaustion it just exits, so the guard was required to stop
+> a thrice-rejected patch from reaching publication. That footgun (surfaced by *this* project)
+> became Terfyn **#361**: `retry until state.approved limit 3` reaches the code after the block
+> **only** when `approved` is true, and otherwise **fails the run** deterministically. Same
+> `≤ 3 per run` bound in `plan`, no manual guard. The agents' prompts, likewise, are loaded from
+> `prompts/*.md` via `instructions file("…")` (v0.3.1, #360) — pinned at load time, so editing a
+> prompt shows up as a `plan` diff.
 
 ---
 
