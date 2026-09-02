@@ -1,6 +1,6 @@
 # terfyn-maintainer
 
-A guarded autonomous PR fixer built on [Terfyn](https://github.com/Terfyn/terfyn) **v0.2.0** —
+A guarded autonomous PR fixer built on [Terfyn](https://github.com/Terfyn/terfyn) **v0.3.0** —
 Codex/Claude Code, but the dangerous parts are structurally bounded and reviewable
 **before** execution.
 
@@ -11,42 +11,43 @@ on GitHub. Before anything runs, `terfyn plan` prints exactly how much authority
 agent can exercise — and the runtime enforces that boundary at dispatch, not via the
 prompt.
 
+**There is no code.** The whole program — agents, workflow, tools, and policies — is one
+declarative [`main.agent`](main.agent) file (Terfyn v0.3.0 inline declarations). Git
+branch/push is Terfyn's native adapter; the capability guarantee is a declarative test.
+
 ## Layout
 
 | Path | What |
 |---|---|
-| [`main.agent`](main.agent) | the Triager / Implementer / Reviewer agents and the bounded `FixPullRequest` workflow |
-| [`tools/`](tools) | native `workspace` + `github` tools; the custom `git` publish tool |
-| [`policies/`](policies) | per-agent policies + the `publishing` gate (`approvals.requiredFor`) |
+| [`main.agent`](main.agent) | the entire program: Triager / Implementer / Reviewer, the bounded `FixPullRequest` workflow, and the inline `tool` + `policy` declarations |
 | [`schemas/`](schemas) | `FixTask` (input) and `CodingState` (loop state) |
-| [`cmd/terfyn-git-publish`](cmd/terfyn-git-publish) | MCP tool: `create_branch` / `push_branch` (the one op Terfyn lacks natively) |
-| [`scripts/terfyn-maintain.sh`](scripts/terfyn-maintain.sh) | a thin convenience wrapper over `terfyn run` (no wrapper binary — `terfyn` is the CLI) |
+| [`tests/capabilities.yaml`](tests/capabilities.yaml) | declarative capability invariants checked by `terfyn test` |
+| [`project.yaml`](project.yaml) | provider + defaults (nothing to import — it's all inline) |
+| [`scripts/terfyn-maintain.sh`](scripts/terfyn-maintain.sh) | optional convenience wrapper over `terfyn run` |
 | [`DESIGN.md`](DESIGN.md) | the full design |
 
 ## Install
 
 ```bash
-go install github.com/Terfyn/terfyn/cmd/terfyn@v0.2.0   # the engine (Go ≥ 1.25)
-go install ./cmd/terfyn-git-publish                      # the branch-publish tool
+go install github.com/Terfyn/terfyn/cmd/terfyn@v0.3.0   # the engine (Go ≥ 1.25) — the only install
 ```
 
-`terfyn` is the CLI. There is no wrapper binary — [`scripts/terfyn-maintain.sh`](scripts/terfyn-maintain.sh)
-is an optional convenience wrapper for the run/resume commands below.
+No project binaries: the workspace, GitHub, and git tools are all native to Terfyn.
 
-## Inspect the capability boundary (offline, no API keys)
+## Inspect and check the boundary (offline, no API keys)
 
 ```bash
 terfyn validate
-terfyn plan
+terfyn plan     # prints the capability review
+terfyn test     # checks the capability invariants
 ```
 
-`plan` prints the review that makes this a Terfyn app — reproduced here:
+`plan` prints the review that makes this a Terfyn app:
 
 ```
 Invocation bounds:
   agent Implementer: ≤ 3 per run
   agent Reviewer:    ≤ 3 per run
-  agent Triager:     ≤ 1 per run
 
 Effect bound (Agent/Implementer):
 - [high] workspace.write   autonomous  may select tool.workspace.write_file
@@ -56,12 +57,17 @@ Effect bound (Agent/Reviewer):
 
 The Reviewer's `workspace.write` is **unreachable — no grant path**: it holds no
 `write_file` grant, so a review that tries to edit is denied at dispatch, not by the
-prompt. Add that grant and `terfyn plan` flags it as `AUTONOMOUS authority WIDENED`.
+prompt. `terfyn test` enforces that as an invariant — add the grant and it fails:
+
+```
+tests/capabilities.yaml  forbid Reviewer → workspace.write  fail
+  agent "Reviewer" can reach "workspace.write" (tool.workspace.write_file) but is forbidden from it
+```
 
 ## Run it for real
 
-Executing the loop needs a real model (the mock model can `validate`/`plan`/`apply` but
-not drive the tools) and a sandbox for the workspace tool:
+Executing the loop needs a real model (the mock model can `validate`/`plan`/`test`/`apply`
+but not drive the tools) and a sandbox for the workspace tool:
 
 ```bash
 export ANTHROPIC_API_KEY=…            # and set the agents' model to anthropic/… in main.agent
@@ -70,12 +76,7 @@ export TERFYN_WORKSPACE_TEST_COMMAND="go test ./..."
 
 printf '{"owner":"Terfyn","repo":"terfyn","number":316,"task":"Fix the CSRF middleware bug"}' > issue.json
 terfyn run workflow/FixPullRequest --input-file issue.json
-```
-
-or, equivalently, the convenience wrapper (same env, minus the hand-written JSON):
-
-```bash
-scripts/terfyn-maintain.sh Terfyn/terfyn 316 "Fix the CSRF middleware bug" /path/to/checkout
+# or: scripts/terfyn-maintain.sh Terfyn/terfyn 316 "Fix the CSRF middleware bug" /path/to/checkout
 ```
 
 At the publication boundary the run **suspends** (`interrupted`, exit 0). Review the
@@ -87,8 +88,8 @@ terfyn run workflow/FixPullRequest --resume <run-id> --decision approve
 ```
 
 `read_file` / `write_file` are confined to `TERFYN_WORKSPACE_ROOT` (a `..` escape is
-rejected), `run_tests` runs only `TERFYN_WORKSPACE_TEST_COMMAND`, and `git.push_branch`
-is human-gated — so the capability boundary holds at the filesystem, the test runner, and
-the network.
+rejected), `run_tests` runs only `TERFYN_WORKSPACE_TEST_COMMAND`, `git.push_branch`
+refuses the default branch and is human-gated — so the capability boundary holds at the
+filesystem, the test runner, and the network.
 
 See [DESIGN.md](DESIGN.md) for the full design and threat model.

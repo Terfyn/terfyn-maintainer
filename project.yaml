@@ -3,15 +3,8 @@ kind: Project
 metadata:
   name: terfyn-maintainer
 spec:
-  # main.agent is discovered automatically; only YAML resources are imported.
-  imports:
-    - ./tools/workspace.yaml
-    - ./tools/github.yaml
-    - ./tools/git.yaml
-    - ./policies/triage-readonly.yaml
-    - ./policies/coding-agent.yaml
-    - ./policies/reviewer.yaml
-    - ./policies/publishing.yaml
+  # Everything — agents, workflow, tools, policies — is authored inline in
+  # main.agent (ADR 005). Only the JSON schemas sit beside it; nothing to import.
   defaults:
     model: mock/gpt-4
     policy: publishing

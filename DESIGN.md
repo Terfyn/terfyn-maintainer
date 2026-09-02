@@ -3,7 +3,14 @@
 > Codex/Claude Code, but the dangerous parts are structurally bounded and reviewable
 > **before** execution.
 
-**Status:** Draft · **Target:** v1 (single-repo, single-issue) · **Built on:** [Terfyn **v0.2.0**](https://github.com/Terfyn/terfyn) (`go install github.com/Terfyn/terfyn/cmd/terfyn@v0.2.0`)
+**Status:** Draft · **Target:** v1 (single-repo, single-issue) · **Built on:** [Terfyn **v0.3.0**](https://github.com/Terfyn/terfyn) (`go install github.com/Terfyn/terfyn/cmd/terfyn@v0.3.0`)
+
+> **v0.3.0 update.** The project is now **zero-code**: the whole program — agents, workflow,
+> tools, policies — is one inline `main.agent` (ADR 005, #333); git branch/push is Terfyn's
+> **native** adapter (#331); and the capability guarantee is a **declarative** `terfyn test`
+> assertion (#332). These three features were filed from building this project on v0.2.0 and
+> landed in v0.3.0. §9 (the git-publish tool) and the Go/CLI history below are kept for
+> context but are obsolete — see the v0.3.0 notes inline.
 
 ---
 
@@ -90,10 +97,14 @@ brief told us to build is now **native**; almost nothing is left to construct.
 | Closed-world manifest pin (dispatch-time + resume) | ✅ shipped | #204 / #207 |
 | HITL suspend/resume, durable across loop iterations | ✅ shipped | execir (#275) |
 | Tamper-evident audit trace + verify | ✅ shipped | `terfyn audit verify` |
-| **Git-publish tool** (`create_branch` / `push_branch`) | 🔨 **build** (the only real gap) | §9 |
+| **Native `git` adapter** (`create_branch` / `push_branch`, refuses default branch) | ✅ **native** (v0.3.0) | #331 / #334 |
+| **Inline `tool` + `policy` in `.agent`** (single-file project) | ✅ shipped (v0.3.0) | #333 / ADR 005 |
+| **Declarative capability assertions** (`terfyn test`) | ✅ shipped (v0.3.0) | #332 / #345 |
 | **No wrapper CLI** — drive `terfyn run` directly (optional shell convenience) | ✅ **decided** | §8 |
 
-Everything except the last two rows is assembly of shipped parts.
+As of v0.3.0 there is nothing left to build: the project is one inline `main.agent` +
+`project.yaml` + two JSON schemas + a `terfyn test` fixture + an optional shell script.
+**Zero code.**
 
 ---
 
@@ -356,12 +367,20 @@ not shell glue around the engine. That keeps the whole run inside one reviewable
 
 ---
 
-## 9. The one component to build: a git-publish tool
+## 9. Branch publication — native in v0.3.0 (was the one build item)
+
+> **v0.3.0: obsolete as a build item.** Branch publication is now Terfyn's **native `git`
+> adapter** (#331): `create_branch` (`git switch -c`) and `push_branch`, rooted at
+> `TERFYN_WORKSPACE_ROOT`, remote from `TERFYN_GIT_REMOTE`, with the safety we asked for
+> baked in — it refuses to push the default branch, rejects a `-`/refspec branch name, and
+> is meant to sit in `approvals.requiredFor`. So the project declares it inline as
+> `tool git { type native; operations { create_branch {…} push_branch {…} } }` and ships
+> **no custom tool**. The rest of this section is the v0.2.0 rationale, kept for context.
 
 Native GitHub ops cover **read + comment** (`pull_request.get`/`diff`/`fetch`/`post_comment`,
 `check_runs.list` — `post_comment` posts live with `GITHUB_TOKEN`, else simulated). What
-v0.2.0 does **not** provide is branch publication: there is **no native `create_branch` or
-`push_branch`.** That is the single genuine build item.
+v0.2.0 did **not** provide was branch publication: there was **no native `create_branch` or
+`push_branch`.** In v0.2.0 that was the single genuine build item —
 
 Build a tiny tool (native subprocess or MCP-over-stdio) exposing exactly two operations,
 rooted at the same checkout as the workspace sandbox:
@@ -431,20 +450,22 @@ the last gate before anything leaves the box.
 
 ## 12. Build plan
 
-1. ✅ **Git-publish tool** (§9) — `create_branch` + `push_branch` over MCP-stdio, rooted at
-   the checkout, closed manifest (`cmd/terfyn-git-publish`, `internal/gitpublish`).
-2. ✅ **`FixPullRequest` `.agent` program** (§5) — Triager + Implementer/Reviewer loop + native
-   GitHub fetch + gated publish boundary (`main.agent`). `validate` + `plan` clean.
-3. ✅ **Policies** — `triage-readonly`, `coding-agent`, `reviewer`, plus the `publishing`
-   workflow policy carrying `approvals.requiredFor` for the two publish ops.
-4. ✅ **No wrapper CLI** (§8) — drive `terfyn run` directly; optional `scripts/terfyn-maintain.sh`.
-5. ✅ **Guarantee test** — `capability/` runs `terfyn plan -o json` and fails if the Reviewer
-   gains `write_file` or if a publish effect stops being a gated workflow step. (A `terfyn test`
-   fixture can't execute the loop — the mock model can't drive tools — so the offline guarantee
-   is asserted on `plan`, not on a workflow run.)
+Under v0.3.0 there is no code to build. The project is:
+
+1. ✅ **One inline `main.agent`** (§5) — Triager + Implementer/Reviewer bounded loop, native
+   GitHub fetch, gated publish boundary, and inline `tool` + `policy` declarations. `validate`
+   + `plan` clean.
+2. ✅ **Native `git` adapter** (§9) — `create_branch` + `push_branch` declared inline as
+   `type native`; **no custom tool** (was `cmd/terfyn-git-publish` under v0.2.0, now deleted).
+3. ✅ **Two JSON schemas** — `FixTask`, `CodingState`.
+4. ✅ **Declarative guarantee** — `tests/capabilities.yaml`: `terfyn test` asserts the Reviewer
+   cannot reach `workspace.write` and the Implementer can. Fails if the grant regresses.
+   (Replaces the v0.2.0 Go test; a `terfyn test` **workflow** run still needs a real model, but
+   the capability assertion is static and model-free.)
+5. ✅ **No wrapper CLI** (§8) — drive `terfyn run` directly; optional `scripts/terfyn-maintain.sh`.
 6. ⏸ **First real run** — fix one small Terfyn/Gombit/Brainrotlang bug end-to-end: `plan` shows
    the bounds, the agent fixes it, review passes, it suspends, you approve, it publishes,
-   `audit verify` passes. *(Needs a real model API key + a live repo — not yet run.)*
+   `audit verify` passes. *(Needs a real model API key + a live repo — the only thing left.)*
 
 The success criterion is the first `terfyn plan` that prints:
 
@@ -455,10 +476,10 @@ Reviewer:           workspace.write   unreachable — no grant path
 Publish:            HUMAN-GATED
 ```
 
-…and then it actually fixes a real bug. In v0.2.0 that first line already prints for this
-project (`terfyn plan`), the git-publish tool is built and its manifest pins, and the
-guarantee is locked by a test — the crossing from "interesting execution engine" to "I would
-use this" is now one real end-to-end run (§12 step 6) away.
+…and then it actually fixes a real bug. That first line already prints for this project
+(`terfyn plan`), git branch/push is native, and the guarantee is locked by `terfyn test` —
+all with **zero code**. The crossing from "interesting execution engine" to "I would use
+this" is now one real end-to-end run (§12 step 6) away.
 
 ---
 
