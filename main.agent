@@ -1,0 +1,187 @@
+// terfyn-maintainer — a guarded autonomous PR fixer (DESIGN.md).
+//
+// Deterministic bounded control around nondeterministic agents: a Triager plans,
+// then an Implementer and an independent Reviewer pass a CodingState back and forth
+// inside a bounded `while … limit 3`, then the workflow stops at the publication
+// boundary (git.push_branch + github.pull_request.post_comment are approvals.requiredFor).
+//
+// The whole program — agents, workflow, tools, and policies — is one .agent file
+// (Terfyn v0.3.0 inline declarations, ADR 005). Only the two JSON schemas and
+// project.yaml sit beside it. No custom code: git branch/push is Terfyn's native
+// adapter (#331).
+//
+//   terfyn validate
+//   terfyn plan
+//   terfyn test
+//   terfyn apply --auto-approve
+//
+// validate/plan/test/apply run offline on the mock model. Executing the loop needs a
+// real model plus a sandbox for the workspace tool (TERFYN_WORKSPACE_ROOT +
+// TERFYN_WORKSPACE_TEST_COMMAND); push uses TERFYN_GIT_REMOTE (default origin).
+
+// ─────────────────────────────── agents ───────────────────────────────
+
+agent Triager {
+    model mock/gpt-4
+    policy triage-readonly
+
+    instructions """
+    You are the triage agent. You receive a FixTask: a GitHub repo, an issue number,
+    and a one-line task. Read the relevant code (and run tests to observe current
+    behavior) and produce a CodingState that seeds the implementation: preserve the
+    task, set approved=false, leave feedback empty, and put a concise plan for the fix
+    in summary. Do not modify anything.
+    """
+
+    grants {
+        tool.workspace.read_file
+        tool.workspace.run_tests
+    }
+
+    input FixTask
+    output CodingState
+}
+
+agent Implementer {
+    model mock/gpt-4
+    policy coding-agent
+
+    instructions """
+    You are the implementation agent. You receive a CodingState describing the task and,
+    on later attempts, review feedback. Implement the change in the workspace: inspect
+    files, modify files, and run tests. Address any review feedback first. When finished,
+    return the complete CodingState — preserve the task, record a concise summary of what
+    you changed, and do not claim tests passed unless you actually ran them successfully.
+    """
+
+    grants {
+        tool.workspace.read_file
+        tool.workspace.write_file
+        tool.workspace.run_tests
+    }
+
+    input CodingState
+    output CodingState
+}
+
+agent Reviewer {
+    model mock/gpt-4
+    policy reviewer
+
+    instructions """
+    You are the independent code reviewer. Inspect the Implementer's work and decide
+    whether it correctly satisfies the task. You may inspect files and run tests. You
+    must not modify the workspace. Set approved=true only if acceptable; otherwise set
+    approved=false and populate feedback with concrete findings for the next attempt.
+    Return the complete CodingState and preserve the task.
+    """
+
+    grants {
+        tool.workspace.read_file
+        tool.workspace.run_tests
+    }
+
+    input CodingState
+    output CodingState
+}
+
+// ────────────────────────────── workflow ──────────────────────────────
+
+workflow FixPullRequest(input: FixTask) -> CodingState
+    policy publishing
+    effects {
+        github.read, github.write, workspace.read, workspace.write,
+        process.exec, repository.write, network.write
+    }
+{
+    state = Triager(input)
+
+    git.create_branch(name: "terfyn/fix-${input.number}")
+
+    while !state.approved limit 3 {
+        implementation = Implementer(state)
+        state          = Reviewer(implementation)
+    }
+
+    // ── publication boundary — both calls are approvals.requiredFor ──
+    git.push_branch(branch: "terfyn/fix-${input.number}")
+    github.pull_request.post_comment(
+        owner: input.owner,
+        repo: input.repo,
+        number: input.number,
+        body: """
+        ## Automated fix
+
+        ${state.summary}
+        """
+    )
+
+    return state
+}
+
+// ─────────────────────────────── tools ────────────────────────────────
+// All native (Terfyn v0.3.0). read_file/write_file/run_tests are sandboxed to
+// TERFYN_WORKSPACE_ROOT; git.push_branch refuses the default branch and is gated.
+
+tool workspace {
+    type native
+    safety { trusted true   sideEffects true }
+    operations {
+        read_file  { effects { workspace.read } }
+        write_file { effects { workspace.write } }
+        run_tests  { effects { process.exec } }
+    }
+}
+
+tool github {
+    type native
+    safety { trusted true   sideEffects true }
+    operations {
+        pull_request.get          { effects { github.read } }
+        pull_request.diff         { effects { github.read } }
+        pull_request.post_comment { effects { github.write } }
+    }
+}
+
+tool git {
+    type native
+    safety { trusted true   sideEffects true }
+    operations {
+        create_branch { effects { repository.write } }   // local ref
+        push_branch   { effects { network.write } }      // publication boundary
+    }
+}
+
+// ────────────────────────────── policies ──────────────────────────────
+
+policy triage-readonly {
+    execution { maxTotalCostUsd 5   maxWallClockSeconds 300 }
+    effects { permit { github.read   workspace.read   process.exec } }
+}
+
+policy coding-agent {
+    execution { maxTotalCostUsd 10   maxWallClockSeconds 600 }
+    effects { permit { workspace.read   workspace.write   process.exec } }
+}
+
+policy reviewer {
+    // Read + test only. workspace.write is absent, so the Reviewer cannot reach it.
+    execution { maxTotalCostUsd 5   maxWallClockSeconds 300 }
+    effects { permit { workspace.read   process.exec } }
+}
+
+policy publishing {
+    // The workflow-level policy: permits non-publishing effects unattended and gates
+    // the two publishing operations behind human approval (run suspends, exit 0).
+    execution { maxTotalCostUsd 20   maxWallClockSeconds 900 }
+    approvals {
+        requiredFor {
+            tool.git.push_branch
+            tool.github.pull_request.post_comment
+        }
+    }
+    effects {
+        permit             { github.read   workspace.read   workspace.write   process.exec   repository.write }
+        permitWithApproval { network.write   github.write }
+    }
+}

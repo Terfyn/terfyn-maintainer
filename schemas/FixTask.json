@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FixTask",
+  "type": "object",
+  "properties": {
+    "owner": {"type": "string", "description": "GitHub repository owner."},
+    "repo": {"type": "string", "description": "GitHub repository name."},
+    "number": {"type": "integer", "description": "Issue or PR number."},
+    "task": {"type": "string", "description": "One-line description of the fix to perform."}
+  },
+  "required": ["owner", "repo", "number", "task"],
+  "additionalProperties": false
+}

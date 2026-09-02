@@ -1,0 +1,14 @@
+# Declarative capability invariants (Terfyn v0.3.0, #332) — the design's guarantee,
+# checked offline by `terfyn test` with no model and no code.
+name: capability-invariants
+assert:
+  forbidEffect:
+    # The Reviewer must never be able to write the workspace.
+    - agent: Reviewer
+      effect: workspace.write
+  expectAutonomous:
+    # The Implementer may autonomously write and run tests.
+    - agent: Implementer
+      effect: workspace.write
+    - agent: Implementer
+      effect: process.exec

@@ -3,7 +3,14 @@
 > Codex/Claude Code, but the dangerous parts are structurally bounded and reviewable
 > **before** execution.
 
-**Status:** Draft · **Target:** v1 (single-repo, single-issue) · **Built on:** [Terfyn **v0.2.0**](https://github.com/Terfyn/terfyn) (`go install github.com/Terfyn/terfyn/cmd/terfyn@v0.2.0`)
+**Status:** Draft · **Target:** v1 (single-repo, single-issue) · **Built on:** [Terfyn **v0.3.0**](https://github.com/Terfyn/terfyn) (`go install github.com/Terfyn/terfyn/cmd/terfyn@v0.3.0`)
+
+> **v0.3.0 update.** The project is now **zero-code**: the whole program — agents, workflow,
+> tools, policies — is one inline `main.agent` (ADR 005, #333); git branch/push is Terfyn's
+> **native** adapter (#331); and the capability guarantee is a **declarative** `terfyn test`
+> assertion (#332). These three features were filed from building this project on v0.2.0 and
+> landed in v0.3.0. §9 (the git-publish tool) and the Go/CLI history below are kept for
+> context but are obsolete — see the v0.3.0 notes inline.
 
 ---
 
@@ -19,8 +26,9 @@ causing before you unleash it, and the runtime enforces that boundary at dispatc
 regardless of what the model tries to do.
 
 ```
-$ terfyn-maintainer --repo gombit-dev/gombit --issue 123 \
-    --task "Fix the CSRF middleware bug"
+$ terfyn run workflow/FixPullRequest --input-file issue.json
+  # issue.json: {"owner":"gombit-dev","repo":"gombit","number":123,
+  #              "task":"Fix the CSRF middleware bug"}
 ```
 
 As of Terfyn v0.2.0 this is **mostly assembly, not construction**: the bounded
@@ -89,10 +97,14 @@ brief told us to build is now **native**; almost nothing is left to construct.
 | Closed-world manifest pin (dispatch-time + resume) | ✅ shipped | #204 / #207 |
 | HITL suspend/resume, durable across loop iterations | ✅ shipped | execir (#275) |
 | Tamper-evident audit trace + verify | ✅ shipped | `terfyn audit verify` |
-| **Git-publish tool** (`create_branch` / `push_branch`) | 🔨 **build** (the only real gap) | §9 |
-| **`terfyn-maintainer` CLI** (issue → input → `terfyn run`) | 🔨 **build** (thin) | §8 |
+| **Native `git` adapter** (`create_branch` / `push_branch`, refuses default branch) | ✅ **native** (v0.3.0) | #331 / #334 |
+| **Inline `tool` + `policy` in `.agent`** (single-file project) | ✅ shipped (v0.3.0) | #333 / ADR 005 |
+| **Declarative capability assertions** (`terfyn test`) | ✅ shipped (v0.3.0) | #332 / #345 |
+| **No wrapper CLI** — drive `terfyn run` directly (optional shell convenience) | ✅ **decided** | §8 |
 
-Everything except the last two rows is assembly of shipped parts.
+As of v0.3.0 there is nothing left to build: the project is one inline `main.agent` +
+`project.yaml` + two JSON schemas + a `terfyn test` fixture + an optional shell script.
+**Zero code.**
 
 ---
 
@@ -323,31 +335,52 @@ grant is the boundary, not the prompt.
 
 ---
 
-## 8. CLI wrapper (`terfyn-maintainer`)
+## 8. No wrapper CLI — `terfyn` is the interface
 
-A thin binary over `terfyn run`. In v0.2.0 most of its former job is native, so it mainly
-shapes input and surfaces the suspension.
+An earlier draft proposed a `terfyn-maintainer` binary. That was a mistake: **`terfyn` is
+already the CLI**, and wrapping a CLI in a CLI adds a binary to build, install, and drift
+from `terfyn`'s flags — for no capability. Worse, the "orchestration" that would justify it
+(cloning a checkout, fetching the issue) is *imperative code outside Terfyn's capability
+boundary* — invisible to `terfyn plan`, absent from the audit trace. That is exactly the
+unbounded glue Terfyn exists to eliminate. So there is no wrapper binary.
+
+You drive `terfyn` directly:
 
 ```bash
-terfyn-maintainer --repo Terfyn/terfyn --issue 316 --task "…"
+export TERFYN_WORKSPACE_ROOT=/path/to/checkout
+export TERFYN_WORKSPACE_TEST_COMMAND="go test ./..."
+printf '{"owner":"Terfyn","repo":"terfyn","number":316,"task":"…"}' > issue.json
+terfyn run workflow/FixPullRequest --input-file issue.json
+# on suspension:
+terfyn run workflow/FixPullRequest --resume <run-id> --decision approve
 ```
 
-1. Resolve `--repo`/`--issue`; fetch metadata (native `pull_request.get` / `issues`), using
-   `GITHUB_TOKEN`.
-2. Set `TERFYN_WORKSPACE_ROOT` to a clean checkout/worktree and `TERFYN_WORKSPACE_TEST_COMMAND`.
-3. Emit `issue.json`, call `terfyn run workflow/FixPullRequest --input-file issue.json`.
-4. On suspension, print the pending request (branch, effects) and the exact
-   `--resume … --decision approve` command. It does **not** auto-approve.
-5. Pass through Terfyn exit codes (§10).
+Everything a wrapper would have shaped — the `FixTask` input, three env vars, the resume
+line — is a few lines of shell, provided as an *optional* convenience wrapper
+(`scripts/terfyn-maintain.sh`) that does **only** input + env + `exec terfyn`, with no git
+or network work of its own.
+
+**Where real setup work belongs.** Fetching the issue is already a workflow tool
+(`github.pull_request.get`). Preparing the checkout, if we want it governed, becomes another
+capability-bounded tool the workflow calls — so it appears in `terfyn plan` and the trace —
+not shell glue around the engine. That keeps the whole run inside one reviewable boundary.
 
 ---
 
-## 9. The one component to build: a git-publish tool
+## 9. Branch publication — native in v0.3.0 (was the one build item)
+
+> **v0.3.0: obsolete as a build item.** Branch publication is now Terfyn's **native `git`
+> adapter** (#331): `create_branch` (`git switch -c`) and `push_branch`, rooted at
+> `TERFYN_WORKSPACE_ROOT`, remote from `TERFYN_GIT_REMOTE`, with the safety we asked for
+> baked in — it refuses to push the default branch, rejects a `-`/refspec branch name, and
+> is meant to sit in `approvals.requiredFor`. So the project declares it inline as
+> `tool git { type native; operations { create_branch {…} push_branch {…} } }` and ships
+> **no custom tool**. The rest of this section is the v0.2.0 rationale, kept for context.
 
 Native GitHub ops cover **read + comment** (`pull_request.get`/`diff`/`fetch`/`post_comment`,
 `check_runs.list` — `post_comment` posts live with `GITHUB_TOKEN`, else simulated). What
-v0.2.0 does **not** provide is branch publication: there is **no native `create_branch` or
-`push_branch`.** That is the single genuine build item.
+v0.2.0 did **not** provide was branch publication: there was **no native `create_branch` or
+`push_branch`.** In v0.2.0 that was the single genuine build item —
 
 Build a tiny tool (native subprocess or MCP-over-stdio) exposing exactly two operations,
 rooted at the same checkout as the workspace sandbox:
@@ -417,19 +450,22 @@ the last gate before anything leaves the box.
 
 ## 12. Build plan
 
-1. **Git-publish tool** (§9) — the only genuinely new code: `create_branch` + `push_branch`,
-   path-rooted to the checkout, closed manifest. *(Or skip it for a comment-only first cut.)*
-2. **`FixPullRequest` `.agent` program** (§5) — extend the shipped `implement-review-loop`
-   with the Triager, the native GitHub fetch, and the gated publish boundary.
-3. **Policies** — `triage-readonly`, `coding-agent`, `reviewer` (as shipped), plus the
-   workflow policy carrying `approvals.requiredFor` for the two publish ops.
-4. **`terfyn-maintainer` CLI** (§8) — issue fetch → `issue.json` + workspace env → `terfyn run`
-   → surface suspension + resume command.
-5. **Golden fixtures** (`terfyn test`) — fail if the Reviewer gains `write_file`
-   (`AUTONOMOUS WIDENED`), if a publish approval gate is dropped, or if a forbidden op appears.
-6. **First real run** — fix one small Terfyn/Gombit/Brainrotlang bug end-to-end: `plan` shows
+Under v0.3.0 there is no code to build. The project is:
+
+1. ✅ **One inline `main.agent`** (§5) — Triager + Implementer/Reviewer bounded loop, native
+   GitHub fetch, gated publish boundary, and inline `tool` + `policy` declarations. `validate`
+   + `plan` clean.
+2. ✅ **Native `git` adapter** (§9) — `create_branch` + `push_branch` declared inline as
+   `type native`; **no custom tool** (was `cmd/terfyn-git-publish` under v0.2.0, now deleted).
+3. ✅ **Two JSON schemas** — `FixTask`, `CodingState`.
+4. ✅ **Declarative guarantee** — `tests/capabilities.yaml`: `terfyn test` asserts the Reviewer
+   cannot reach `workspace.write` and the Implementer can. Fails if the grant regresses.
+   (Replaces the v0.2.0 Go test; a `terfyn test` **workflow** run still needs a real model, but
+   the capability assertion is static and model-free.)
+5. ✅ **No wrapper CLI** (§8) — drive `terfyn run` directly; optional `scripts/terfyn-maintain.sh`.
+6. ⏸ **First real run** — fix one small Terfyn/Gombit/Brainrotlang bug end-to-end: `plan` shows
    the bounds, the agent fixes it, review passes, it suspends, you approve, it publishes,
-   `audit verify` passes.
+   `audit verify` passes. *(Needs a real model API key + a live repo — the only thing left.)*
 
 The success criterion is the first `terfyn plan` that prints:
 
@@ -440,9 +476,10 @@ Reviewer:           workspace.write   unreachable — no grant path
 Publish:            HUMAN-GATED
 ```
 
-…and then it actually fixes a real bug. In v0.2.0 that first line already prints for the
-shipped example — the crossing from "interesting execution engine" to "I would use this" is
-one git-publish tool and one CLI away.
+…and then it actually fixes a real bug. That first line already prints for this project
+(`terfyn plan`), git branch/push is native, and the guarantee is locked by `terfyn test` —
+all with **zero code**. The crossing from "interesting execution engine" to "I would use
+this" is now one real end-to-end run (§12 step 6) away.
 
 ---
 
