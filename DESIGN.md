@@ -64,7 +64,8 @@ Effect bound (Agent/Reviewer):
 
 Human-gated (approvals.requiredFor):
   tool.git.push_branch
-  tool.github.pull_request.post_comment
+  tool.github.pull_request.create
+  tool.github.issues.comment
 ```
 
 The invocation bound `≤ 3 per run` is derived by control-flow analysis directly from the
@@ -117,7 +118,7 @@ As of v0.3.0 there is nothing left to build: the project is one inline `main.age
                  └───────┬───────┘
                          ▼
                   ┌─────────────┐   github.read + workspace.read
-                  │   Triager   │   fetches the issue/PR (github.pull_request.get,
+                  │   Triager   │   fetches the issue (github.issues.get,
                   │  read only  │   native, GITHUB_TOKEN) + reads code → a plan
                   └──────┬──────┘
                          │  git.create_branch  (native)
@@ -134,7 +135,7 @@ As of v0.3.0 there is nothing left to build: the project is one inline `main.age
              │     rejected           still rejected after 3 rounds
              └──────────┘  approved   ──────────────────────────►  return (NOT published)
                          ▼
-                ┌─────────────────┐   git.push_branch + github.pull_request.post_comment
+                ┌─────────────────┐   git.push_branch + pull_request.create + issues.comment
                 │ HUMAN APPROVAL  │   → approvals.requiredFor → run suspends (interrupted, exit 0)
                 │ publish changes │   → resume with --decision approve
                 └───────┬─────────┘
@@ -147,7 +148,7 @@ As of v0.3.0 there is nothing left to build: the project is one inline `main.age
 ```
 $ terfyn run workflow/FixPullRequest --input-file issue.json
 
-✓ fetched issue          github.pull_request.get
+✓ fetched issue          github.issues.get
 ✓ triaged                Triager
 ✓ branch created         git.create_branch
 ✓ implement attempt 1  → tests → reviewer REJECTED
@@ -198,8 +199,7 @@ agent Triager {
     policy   triage-readonly
     instructions file("prompts/triager.md")   // prompts live as files (v0.3.1, #360)
     grants {
-        tool.github.pull_request.get           // fetches the issue/PR itself
-        tool.github.pull_request.diff
+        tool.github.issues.get                 // fetches the issue itself
         tool.workspace.read_file
         tool.workspace.run_tests
     }
@@ -256,15 +256,16 @@ workflow FixPullRequest(input: FixTask) -> CodingState
         state          = Reviewer(implementation)
     }
 
-    // ── publication boundary — reached only when approved; both calls are approvals.requiredFor ──
+    // ── publication boundary — reached only when approved; all three are approvals.requiredFor ──
     git.push_branch(branch: "terfyn/fix-${input.number}")
-    github.pull_request.post_comment(
+    pr = github.pull_request.create(
+        owner: input.owner, repo: input.repo,
+        head: "terfyn/fix-${input.number}", base: "main",
+        title: "${state.summary}", body: "Fixes #${input.number}."
+    )
+    github.issues.comment(
         owner: input.owner, repo: input.repo, number: input.number,
-        body: """
-        ## Automated fix
-
-        ${state.summary}
-        """
+        body: "Opened a fix PR: ${pr.html_url}"
     )
     return state
 }
@@ -411,7 +412,7 @@ branch. That ships with **zero** custom tools, purely from native Terfyn.
 
 ### Gating
 
-`git.push_branch` and `github.pull_request.post_comment` go in the workflow policy's
+`git.push_branch`, `github.pull_request.create`, and `github.issues.comment` go in the workflow policy's
 `approvals.requiredFor`. Reaching either suspends the run (`interrupted`, exit 0) until a
 human resumes with `--decision approve`. Note (Terfyn semantics): HITL suspend/resume fires
 for these workflow tool calls; keep the publish calls as workflow-level steps so they gate,

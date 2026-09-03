@@ -4,11 +4,16 @@ metadata:
   name: terfyn-maintainer
 spec:
   # Everything — agents, workflow, tools, policies — is authored inline in
-  # main.agent (ADR 005). Only the JSON schemas sit beside it; nothing to import.
+  # main.agent (ADR 005). Only the JSON schemas and prompts sit beside it.
   defaults:
-    model: mock/gpt-4
+    model: anthropic/claude-sonnet-5
     policy: publishing
   providers:
     models:
-      mock:
-        type: mock
+      anthropic:
+        type: anthropic
+        apiKeyFrom: env:ANTHROPIC_API_KEY
+        # Identity-linked keys (not scoped to one workspace) also need a workspace
+        # id — uncomment if you hit "anthropic-workspace-id is required" (Terfyn #428).
+        # A plain workspace-scoped key needs nothing here.
+        # workspaceIdFrom: env:ANTHROPIC_WORKSPACE_ID

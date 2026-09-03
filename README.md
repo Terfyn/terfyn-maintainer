@@ -70,22 +70,22 @@ tests/capabilities.yaml  forbid Reviewer → workspace.write  fail
 
 ## Run it for real
 
-Executing the loop needs a real model (the mock model can `validate`/`plan`/`test`/`apply`
-but not drive the tools) and a sandbox for the workspace tool. Configuration comes from
-`.env`; the input is a JSON file; one script runs it.
+Executing the loop needs API keys (the agents use `anthropic/claude-sonnet-5`; `validate`/
+`plan`/`test` are static and need none) and a workspace sandbox. Configuration comes from
+`.env`; the input is a JSON file (the **issue** to fix); one script runs it.
 
 ```bash
-cp .env.example .env      # then fill in ANTHROPIC_API_KEY + TERFYN_WORKSPACE_ROOT
-                          # (and set the agents' model to anthropic/… in main.agent)
-$EDITOR issue.json        # owner / repo / number / task  (matches schemas/FixTask.json)
+cp .env.example .env      # ANTHROPIC_API_KEY + GITHUB_TOKEN + TERFYN_WORKSPACE_ROOT
+$EDITOR issue.json        # owner / repo / number / task  (the GitHub issue to fix)
 
 scripts/terfyn-maintain.sh            # = terfyn run workflow/FixPullRequest --input-file issue.json
 scripts/terfyn-maintain.sh other.json # a different input file
 ```
 
-The script sources `.env` and hands the workspace/remote settings to Terfyn's native
-adapters; it does no git or network work of its own. At the publication boundary the run
-**suspends** (`interrupted`, exit 0). Review the pending push, then resume:
+The Triager reads the issue, the Implementer/Reviewer loop produces a fix, and the
+publication boundary **pushes the branch, opens a PR, and comments on the issue**. Those
+three are gated, so at the boundary the run **suspends** (`interrupted`, exit 0). Review
+what it's about to publish, then resume:
 
 ```bash
 scripts/terfyn-maintain.sh --resume <run-id> approve
