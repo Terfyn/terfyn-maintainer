@@ -1,36 +1,34 @@
 // terfyn-maintainer — a guarded autonomous PR fixer (DESIGN.md).
 //
-// Deterministic bounded control around nondeterministic agents: a Triager plans,
-// then an Implementer and an independent Reviewer pass a CodingState back and forth
-// inside a bounded `while … limit 3`, then the workflow stops at the publication
-// boundary (git.push_branch + github.pull_request.post_comment are approvals.requiredFor).
+// Issue in → PR out. A Triager reads the GitHub issue, an Implementer and an
+// independent Reviewer pass a CodingState back and forth inside a bounded
+// `retry until state.approved limit 3`, then the workflow stops at the publication
+// boundary — push the branch, OPEN the fix PR, and comment on the issue
+// (git.push_branch + github.pull_request.create + github.issues.comment are
+// approvals.requiredFor, so the run suspends for human approval).
 //
 // The whole program — agents, workflow, tools, and policies — is one .agent file
-// (Terfyn v0.3.0 inline declarations, ADR 005). Agent prompts live in prompts/*.md
-// via `instructions file(...)` (v0.3.1, #360); the two JSON schemas and project.yaml
-// sit beside it. No custom code: git branch/push is Terfyn's native adapter (#331),
-// and the bounded implement→review retry uses `retry until … limit 3` (v0.3.1, #361).
+// (Terfyn inline declarations, ADR 005). Agent prompts live in prompts/*.md via
+// `instructions file(...)` (#360); the two JSON schemas and project.yaml sit beside
+// it. No custom code: all tools are Terfyn native adapters — workspace, git (#331),
+// and github (issues.get, pull_request.create, …).
 //
-//   terfyn validate
-//   terfyn plan
-//   terfyn test
-//   terfyn apply --auto-approve
+//   terfyn validate   terfyn plan   terfyn test   terfyn apply --auto-approve
 //
-// validate/plan/test/apply run offline on the mock model. Executing the loop needs a
-// real model plus a sandbox for the workspace tool (TERFYN_WORKSPACE_ROOT +
-// TERFYN_WORKSPACE_TEST_COMMAND); push uses TERFYN_GIT_REMOTE (default origin).
+// validate/plan/test are static (no API key). Executing the loop needs a real model
+// key + a workspace sandbox (TERFYN_WORKSPACE_ROOT + TERFYN_WORKSPACE_TEST_COMMAND) +
+// GITHUB_TOKEN; push uses TERFYN_GIT_REMOTE (default origin).
 
 // ─────────────────────────────── agents ───────────────────────────────
 
 agent Triager {
-    model mock/gpt-4
+    model anthropic/claude-sonnet-5
     policy triage-readonly
 
     instructions file("prompts/triager.md")
 
     grants {
-        tool.github.pull_request.get
-        tool.github.pull_request.diff
+        tool.github.issues.get
         tool.workspace.read_file
         tool.workspace.run_tests
     }
@@ -40,7 +38,7 @@ agent Triager {
 }
 
 agent Implementer {
-    model mock/gpt-4
+    model anthropic/claude-sonnet-5
     policy coding-agent
 
     instructions file("prompts/implementer.md")
@@ -56,7 +54,7 @@ agent Implementer {
 }
 
 agent Reviewer {
-    model mock/gpt-4
+    model anthropic/claude-sonnet-5
     policy reviewer
 
     instructions file("prompts/reviewer.md")
@@ -92,17 +90,27 @@ workflow FixPullRequest(input: FixTask) -> CodingState
         state          = Reviewer(implementation)
     }
 
-    // ── publication boundary — reached only when approved; both calls are approvals.requiredFor ──
+    // ── publication boundary — reached only when approved; all three are approvals.requiredFor ──
     git.push_branch(branch: "terfyn/fix-${input.number}")
-    github.pull_request.post_comment(
+    pr = github.pull_request.create(
         owner: input.owner,
         repo: input.repo,
-        number: input.number,
+        head: "terfyn/fix-${input.number}",
+        base: "main",
+        title: "${state.summary}",
         body: """
         ## Automated fix
 
         ${state.summary}
+
+        Fixes #${input.number}.
         """
+    )
+    github.issues.comment(
+        owner: input.owner,
+        repo: input.repo,
+        number: input.number,
+        body: "Opened a fix PR: ${pr.html_url}"
     )
 
     return state
@@ -126,9 +134,9 @@ tool github {
     type native
     safety { trusted true   sideEffects true }
     operations {
-        pull_request.get          { effects { github.read } }
-        pull_request.diff         { effects { github.read } }
-        pull_request.post_comment { effects { github.write } }
+        issues.get          { effects { github.read } }   // read the issue to fix
+        pull_request.create { effects { github.write } }  // open the fix PR — the deliverable
+        issues.comment      { effects { github.write } }  // link the PR back on the issue
     }
 }
 
@@ -166,7 +174,8 @@ policy publishing {
     approvals {
         requiredFor {
             tool.git.push_branch
-            tool.github.pull_request.post_comment
+            tool.github.pull_request.create
+            tool.github.issues.comment
         }
     }
     effects {
