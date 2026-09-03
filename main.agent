@@ -33,6 +33,10 @@ agent Triager {
         tool.workspace.run_tests
     }
 
+    // Exploring a real repo (list dirs, read files, run tests) takes more than the
+    // default 8 reason→act turns; bounded well under Terfyn's hard cap of 32.
+    constraints { maxIterations 20 }
+
     input FixTask
     output CodingState
 }
@@ -49,6 +53,9 @@ agent Implementer {
         tool.workspace.run_tests
     }
 
+    // The Implementer does the most tool work (explore, edit, run tests, iterate).
+    constraints { maxIterations 30 }
+
     input CodingState
     output CodingState
 }
@@ -63,6 +70,8 @@ agent Reviewer {
         tool.workspace.read_file
         tool.workspace.run_tests
     }
+
+    constraints { maxIterations 20 }
 
     input CodingState
     output CodingState
