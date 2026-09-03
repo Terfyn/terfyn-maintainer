@@ -347,21 +347,21 @@ from `terfyn`'s flags — for no capability. Worse, the "orchestration" that wou
 boundary* — invisible to `terfyn plan`, absent from the audit trace. That is exactly the
 unbounded glue Terfyn exists to eliminate. So there is no wrapper binary.
 
-You drive `terfyn` directly:
+You drive `terfyn` directly. Configuration is a `.env` file, the input is a JSON file, and
+one script ties them together:
 
 ```bash
-export TERFYN_WORKSPACE_ROOT=/path/to/checkout
-export TERFYN_WORKSPACE_TEST_COMMAND="go test ./..."
-printf '{"owner":"Terfyn","repo":"terfyn","number":316,"task":"…"}' > issue.json
-terfyn run workflow/FixPullRequest --input-file issue.json
-# on suspension:
-terfyn run workflow/FixPullRequest --resume <run-id> --decision approve
+cp .env.example .env      # ANTHROPIC_API_KEY, TERFYN_WORKSPACE_ROOT, TEST_COMMAND, GIT_REMOTE
+$EDITOR issue.json        # owner / repo / number / task
+
+scripts/terfyn-maintain.sh                     # sources .env, terfyn run --input-file issue.json
+scripts/terfyn-maintain.sh --resume <id> approve
 ```
 
-Everything a wrapper would have shaped — the `FixTask` input, three env vars, the resume
-line — is a few lines of shell, provided as an *optional* convenience wrapper
-(`scripts/terfyn-maintain.sh`) that does **only** input + env + `exec terfyn`, with no git
-or network work of its own.
+`scripts/terfyn-maintain.sh` is a thin wrapper that does **only** load `.env` + `exec terfyn`
+— no git or network work of its own. Splitting config (`.env`, gitignored), input
+(`issue.json`), and the runner (the script) keeps secrets out of the repo and the input out
+of the command line, while the workflow itself stays the single reviewable boundary.
 
 **Where real setup work belongs.** Fetching the issue is already a workflow tool
 (`github.pull_request.get`). Preparing the checkout, if we want it governed, becomes another
