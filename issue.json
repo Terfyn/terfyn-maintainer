@@ -1,0 +1,6 @@
+{
+  "owner": "Terfyn",
+  "repo": "terfyn",
+  "number": 316,
+  "task": "Fix the CSRF middleware bug"
+}

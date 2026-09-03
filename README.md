@@ -25,7 +25,9 @@ bounded retry is `retry until … limit 3`; the capability guarantee is a declar
 | [`schemas/`](schemas) | `FixTask` (input) and `CodingState` (loop state) |
 | [`tests/capabilities.yaml`](tests/capabilities.yaml) | declarative capability invariants checked by `terfyn test` |
 | [`project.yaml`](project.yaml) | provider + defaults (nothing to import — it's all inline) |
-| [`scripts/terfyn-maintain.sh`](scripts/terfyn-maintain.sh) | optional convenience wrapper over `terfyn run` |
+| [`issue.json`](issue.json) | the workflow input (owner / repo / number / task) |
+| [`.env.example`](.env.example) | template for `.env` (API key + workspace settings; `.env` is gitignored) |
+| [`scripts/terfyn-maintain.sh`](scripts/terfyn-maintain.sh) | runs `terfyn run`, sourcing `.env` and the input JSON |
 | [`DESIGN.md`](DESIGN.md) | the full design |
 
 ## Install
@@ -69,24 +71,24 @@ tests/capabilities.yaml  forbid Reviewer → workspace.write  fail
 ## Run it for real
 
 Executing the loop needs a real model (the mock model can `validate`/`plan`/`test`/`apply`
-but not drive the tools) and a sandbox for the workspace tool:
+but not drive the tools) and a sandbox for the workspace tool. Configuration comes from
+`.env`; the input is a JSON file; one script runs it.
 
 ```bash
-export ANTHROPIC_API_KEY=…            # and set the agents' model to anthropic/… in main.agent
-export TERFYN_WORKSPACE_ROOT="$(git -C /path/to/checkout rev-parse --show-toplevel)"
-export TERFYN_WORKSPACE_TEST_COMMAND="go test ./..."
+cp .env.example .env      # then fill in ANTHROPIC_API_KEY + TERFYN_WORKSPACE_ROOT
+                          # (and set the agents' model to anthropic/… in main.agent)
+$EDITOR issue.json        # owner / repo / number / task  (matches schemas/FixTask.json)
 
-printf '{"owner":"Terfyn","repo":"terfyn","number":316,"task":"Fix the CSRF middleware bug"}' > issue.json
-terfyn run workflow/FixPullRequest --input-file issue.json
-# or: scripts/terfyn-maintain.sh Terfyn/terfyn 316 "Fix the CSRF middleware bug" /path/to/checkout
+scripts/terfyn-maintain.sh            # = terfyn run workflow/FixPullRequest --input-file issue.json
+scripts/terfyn-maintain.sh other.json # a different input file
 ```
 
-At the publication boundary the run **suspends** (`interrupted`, exit 0). Review the
-pending push, then resume:
+The script sources `.env` and hands the workspace/remote settings to Terfyn's native
+adapters; it does no git or network work of its own. At the publication boundary the run
+**suspends** (`interrupted`, exit 0). Review the pending push, then resume:
 
 ```bash
-terfyn run workflow/FixPullRequest --resume <run-id> --decision approve
-# or: scripts/terfyn-maintain.sh --resume <run-id> approve
+scripts/terfyn-maintain.sh --resume <run-id> approve
 ```
 
 `read_file` / `write_file` are confined to `TERFYN_WORKSPACE_ROOT` (a `..` escape is
