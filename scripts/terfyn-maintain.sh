@@ -23,14 +23,15 @@ if [[ -f "$root/.env" ]]; then
   set -a; . "$root/.env"; set +a
 fi
 
-command -v terfyn >/dev/null || die "terfyn is not installed (go install github.com/Terfyn/terfyn/cmd/terfyn@v0.3.1)"
+command -v terfyn >/dev/null || die "terfyn is not installed (go install github.com/Terfyn/terfyn/cmd/terfyn@v0.4.6)"
 
 # Resume path: carry a human decision back into a suspended run.
 if [[ "${1:-}" == "--resume" ]]; then
   [[ -n "${2:-}" ]] || die "usage: --resume <run-id> [approve|reject]"
   decision="${3:-approve}"
   [[ "$decision" == "approve" || "$decision" == "reject" ]] || die "decision must be approve or reject"
-  exec terfyn run workflow/FixPullRequest --project "$root" --resume "$2" --decision "$decision"
+  # --resume takes NO workflow argument (terfyn rejects `run workflow/… --resume`).
+  exec terfyn run --trace-detail --project "$root" --resume "$2" --decision "$decision"
 fi
 
 # Fresh run: input comes from a JSON file (default issue.json).
@@ -43,4 +44,4 @@ echo "→ terfyn run workflow/FixPullRequest --input-file $input" >&2
 echo "  workspace: $TERFYN_WORKSPACE_ROOT" >&2
 echo "  suspends at the publication boundary; resume with:" >&2
 echo "    scripts/terfyn-maintain.sh --resume <run-id> approve" >&2
-exec terfyn run workflow/FixPullRequest --project "$root" --input-file "$input"
+exec terfyn run --trace-detail workflow/FixPullRequest --project "$root" --input-file "$input"

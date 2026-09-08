@@ -3,14 +3,73 @@
 > Codex/Claude Code, but the dangerous parts are structurally bounded and reviewable
 > **before** execution.
 
-**Status:** Draft · **Target:** v1 (single-repo, single-issue) · **Built on:** [Terfyn **v0.3.1**](https://github.com/Terfyn/terfyn) (`go install github.com/Terfyn/terfyn/cmd/terfyn@v0.3.1`)
+**Status:** Draft · **Target:** v1 (single-repo, single-issue) · **Built on:** [Terfyn **v0.4.6**](https://github.com/Terfyn/terfyn) (`go install github.com/Terfyn/terfyn/cmd/terfyn@v0.4.6`)
 
-> **v0.3.0 update.** The project is now **zero-code**: the whole program — agents, workflow,
+> **v0.4.1 update.** Two changes filed from this project's first live run landed in v0.4.1:
+> the native `workspace` adapter gained `list_dir` / `glob` / `grep` discovery ops (#452), so
+> the agents locate code instead of guessing paths; and a `read_file` that misses is now
+> returned as a **recoverable** `{error: …}` observation rather than aborting the run (#451).
+> The agents hold the discovery grants and carry `maxIterations` budgets for real-repo
+> exploration. Separately, ADR 007 (#430) makes `.agent` the **sole** authoring surface —
+> YAML is export/interchange output only — so `project.yaml` is gone; `provider` and
+> `defaults` are now declared inline in `main.agent`. (`terfyn fmt` preserves comments as of
+> v0.4.4 — Terfyn#509/#516 — so it is safe to run on this documented example.)
+>
+> **v0.4.2 update.** The first live run against a real repo surfaced three more gaps, all
+> filed upstream: a 429 rate limit with no backoff (mitigated here by splitting Triager +
+> Reviewer onto `claude-haiku-4-5`), `terfyn fmt` stripping comments (#509), and — the one
+> that blocked the run — `requireStructuredOutput` being a silent no-op with agent output
+> parsed verbatim, so any model preamble failed the JSON parse (#510). #510 **landed in
+> v0.4.2** (#511: tolerant output parsing + `requireStructuredOutput` wired to the
+> provider's structured outputs); the agents set `requireStructuredOutput true`.
+>
+> **v0.4.3 update.** Two more gaps from the live run landed. The run then reached the
+> Implementer and hit a **hardcoded 4096 `max_tokens`** — a `write_file` emits the whole
+> file as output tokens, so the completion truncated and the run aborted (#514). v0.4.3
+> makes `max_tokens` a per-agent **`maxTokens` constraint** (default raised 4096 → 16384)
+> and handles the cap-stop gracefully (#515); the Implementer sets `maxTokens 32000`.
+> Alongside it, the `workspace` adapter gained a **line-range `read_file`** (`offset`/
+> `limit`) and a **surgical `edit`** (str_replace) so the Implementer patches the changed
+> span instead of rewriting whole files (#513/#512) — which also keeps output well under
+> the cap.
+>
+> **v0.4.4 update.** The run then got stuck in triage: the agent explored to Terfyn's hard
+> iteration cap (32) and the run **failed** — even on a bounded issue, because agents don't
+> reliably self-terminate and the engine treated the cap as fatal. Three fixes landed:
+> reaching `maxIterations` now forces one tool-free final completion so the agent emits its
+> best result instead of aborting (#518/#520); `git.create_branch` is **idempotent** with an
+> opt-in `reset`/`base` so re-running an issue starts clean instead of failing on an existing
+> branch (#517/#521 — the workflow uses `reset: true, base: "main"`); and `terfyn fmt` now
+> **preserves comments** (#509/#516).
+>
+> **v0.4.5 update.** With finalization in place the full triage→implement→review loop ran
+> end to end, but the Implementer kept hitting the 32-turn ceiling before it could explore +
+> edit + run tests + fix in one attempt, so the Reviewer never saw verified work and
+> `retry until` exhausted all three rounds (the #361 guard correctly refusing to publish).
+> Two responses: the agent prompts now insist on acting on the plan/feedback directly,
+> batching reads, and running tests before returning; and the iteration ceiling is now a
+> **policy `execution.maxIterations`** rather than a frozen constant (#522/#523), so the
+> `coding-agent`/`reviewer` policies lift it (64/48) while triage keeps the default 32 —
+> cost/wall-clock still bound runaways.
+>
+> **v0.4.6 update — the loop closed.** The full run finally reached the end: the Implementer
+> (moved to `claude-sonnet-5`; haiku was emitting malformed `edit` tool calls that poisoned
+> the request into an opaque 400) edited and tested, the Reviewer **approved**, and the run
+> pushed the branch and tried to open the PR — which failed **422 "No commits"**, because the
+> agents edit the working tree but the git adapter had no way to commit. Four fixes landed:
+> failed tool calls are now answered cleanly and provider 4xx carries context (#524/#526);
+> **`git.commit`** closes the issue→PR loop (#528/#529 — the workflow now commits the approved
+> changes before pushing); `--trace-detail` surfaces reasoning, tool args, edit diffs, and the
+> test command+output (#525/#527, used by the run script); and `export --output` writes a
+> loadable `.agent` project (#507/#530). The PR title was also decoupled from the (paragraph-
+> long) Implementer summary. Still open: 429 rate-limit backoff (unfiled).
+>
+> **v0.3.0 update.** The project became **zero-code**: the whole program — agents, workflow,
 > tools, policies — is one inline `main.agent` (ADR 005, #333); git branch/push is Terfyn's
 > **native** adapter (#331); and the capability guarantee is a **declarative** `terfyn test`
 > assertion (#332). These three features were filed from building this project on v0.2.0 and
 > landed in v0.3.0. §9 (the git-publish tool) and the Go/CLI history below are kept for
-> context but are obsolete — see the v0.3.0 notes inline.
+> context but are obsolete — see the update notes inline.
 
 ---
 
