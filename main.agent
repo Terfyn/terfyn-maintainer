@@ -7,22 +7,43 @@
 // (git.push_branch + github.pull_request.create + github.issues.comment are
 // approvals.requiredFor, so the run suspends for human approval).
 //
-// The whole program — agents, workflow, tools, and policies — is one .agent file
-// (Terfyn inline declarations, ADR 005). Agent prompts live in prompts/*.md via
-// `instructions file(...)` (#360); the two JSON schemas and project.yaml sit beside
-// it. No custom code: all tools are Terfyn native adapters — workspace, git (#331),
-// and github (issues.get, pull_request.create, …).
+// The whole program — provider, defaults, agents, workflow, tools, and policies — is
+// one .agent file. As of Terfyn v0.4.1, .agent is the SOLE authoring surface (ADR 007,
+// #430): YAML is export/interchange output only, so there is no project.yaml — the
+// project name is the directory name and `provider`/`defaults` are declared inline
+// below. Agent prompts live in prompts/*.md via `instructions file(...)` (#360); the
+// two JSON schemas sit beside this file. No custom code: all tools are Terfyn native
+// adapters — workspace (read_file/write_file/run_tests plus the list_dir/glob/grep
+// discovery ops added in v0.4.1, #452), git (#331), and github.
 //
 //   terfyn validate   terfyn plan   terfyn test   terfyn apply --auto-approve
+//   (terfyn fmt preserves comments as of v0.4.4 — #509/#516 — so it is safe to run.)
 //
 // validate/plan/test are static (no API key). Executing the loop needs a real model
 // key + a workspace sandbox (TERFYN_WORKSPACE_ROOT + TERFYN_WORKSPACE_TEST_COMMAND) +
 // GITHUB_TOKEN; push uses TERFYN_GIT_REMOTE (default origin).
 
+// ───────────────────────── provider + defaults ────────────────────────
+// Migrated from the former project.yaml (v0.4.1 makes YAML output-only, ADR 007).
+// Built-in providers need no declaration; we declare `anthropic` only to pass a
+// workspace id for identity-linked keys (#428) — a plain workspace-scoped key needs
+// no alias and this whole block can be dropped.
+
+provider anthropic {
+    type anthropic
+    apiKeyFrom "env:ANTHROPIC_API_KEY"
+    workspaceIdFrom "env:ANTHROPIC_WORKSPACE_ID"
+}
+
+defaults {
+    policy publishing
+    model anthropic/claude-haiku-4-5
+}
+
 // ─────────────────────────────── agents ───────────────────────────────
 
 agent Triager {
-    model anthropic/claude-sonnet-5
+    model anthropic/claude-haiku-4-5
     policy triage-readonly
 
     instructions file("prompts/triager.md")
@@ -30,14 +51,33 @@ agent Triager {
     grants {
         tool.github.issues.get
         tool.workspace.read_file
-        tool.workspace.run_tests
+        tool.workspace.list_dir   // discover the repo layout instead of guessing paths (#452)
+        tool.workspace.glob
+        tool.workspace.grep
+        // NOTE: no run_tests — triage only plans; a full `go test ./...` (≈100s) is the
+        // Implementer/Reviewer's job. Keeping triage read-only also keeps it fast and cheap.
     }
+
+    // 32 is the DEFAULT iteration ceiling; as of v0.4.5 (#522) a policy raises or lowers it via
+    // execution.maxIterations. Triage keeps the default (planning shouldn't need more); the
+    // Implementer/Reviewer policies lift it. And since v0.4.4 (#518) reaching the ceiling no
+    // longer fails the run — the engine forces one final tool-free completion so the agent still
+    // emits its best CodingState — so the ceiling is a graceful backstop, not a run-ender.
+    // requireStructuredOutput binds the completion to the CodingState schema at the
+    // provider (Anthropic structured outputs), so the agent cannot prepend prose that
+    // would fail the JSON parse — wired in v0.4.2 (#510/#511); v0.4.1 accepted the flag
+    // but ignored it. (`temperature` is NOT set — it is rejected with a 400 on these
+    // models; structured output is the correct lever here, not sampling.)
+    constraints { maxIterations 32   requireStructuredOutput true }
 
     input FixTask
     output CodingState
 }
 
 agent Implementer {
+    // The Implementer drives the edit/test loop; a stronger model emits cleaner tool calls
+    // (haiku was producing malformed `edit` calls that poisoned the request → Terfyn#524).
+    // Triager/Reviewer stay on haiku; only this hot path is on sonnet.
     model anthropic/claude-sonnet-5
     policy coding-agent
 
@@ -45,24 +85,39 @@ agent Implementer {
 
     grants {
         tool.workspace.read_file
-        tool.workspace.write_file
+        tool.workspace.list_dir   // locate the code to change before editing (#452)
+        tool.workspace.glob
+        tool.workspace.grep
+        tool.workspace.edit       // surgical str_replace — preferred over write_file (#512)
+        tool.workspace.write_file // whole-file write, for NEW files
         tool.workspace.run_tests
     }
+
+    // The Implementer does the most tool work (explore, edit, run tests, iterate).
+    // maxTokens (v0.4.3, #514) caps one completion's output; the default is 16384, raised
+    // here since a coding turn can emit a large edit/new file. Surgical `edit` keeps most
+    // turns far under this — a str_replace emits only the changed span, not the whole file.
+    constraints { maxIterations 64   maxTokens 32000   requireStructuredOutput true }
 
     input CodingState
     output CodingState
 }
 
 agent Reviewer {
-    model anthropic/claude-sonnet-5
+    model anthropic/claude-haiku-4-5
     policy reviewer
 
     instructions file("prompts/reviewer.md")
 
     grants {
         tool.workspace.read_file
+        tool.workspace.list_dir   // read-only discovery — no write_file grant (see policy reviewer)
+        tool.workspace.glob
+        tool.workspace.grep
         tool.workspace.run_tests
     }
+
+    constraints { maxIterations 48   requireStructuredOutput true }
 
     input CodingState
     output CodingState
@@ -79,7 +134,9 @@ workflow FixPullRequest(input: FixTask) -> CodingState
 {
     state = Triager(input)
 
-    git.create_branch(name: "terfyn/fix-${input.number}")
+    // Idempotent + reset off main (v0.4.4, #517): re-running the same issue starts from a
+    // clean branch instead of failing on "already exists" or inheriting a prior attempt.
+    git.create_branch(name: "gombit/fix-${input.number}", reset: true, base: "main")
 
     // Bounded retry: run implement→review up to 3 times and proceed only once the
     // Reviewer approves. On exhaustion (3 rejected rounds) `retry until` fails the run
@@ -90,14 +147,21 @@ workflow FixPullRequest(input: FixTask) -> CodingState
         state          = Reviewer(implementation)
     }
 
-    // ── publication boundary — reached only when approved; all three are approvals.requiredFor ──
-    git.push_branch(branch: "terfyn/fix-${input.number}")
+    // Commit the approved working-tree changes (v0.4.6, #528): the agents edited files but
+    // hold no git capability, so the workflow commits here. commit is local (repository.write,
+    // unattended); the push/PR/comment below are the gated publication boundary.
+    git.commit(message: "Fix #${input.number}: ${input.task}")
+
+    // ── publication boundary — reached only when approved; push/PR/comment are approvals.requiredFor ──
+    git.push_branch(branch: "gombit/fix-${input.number}")
     pr = github.pull_request.create(
         owner: input.owner,
         repo: input.repo,
-        head: "terfyn/fix-${input.number}",
+        head: "gombit/fix-${input.number}",
         base: "main",
-        title: "${state.summary}",
+        // Short title from the one-line task; the full write-up goes in the body. (Do NOT use
+        // ${state.summary} — the Implementer's summary can run to paragraphs.)
+        title: "Fix #${input.number}: ${input.task}",
         body: """
         ## Automated fix
 
@@ -117,15 +181,26 @@ workflow FixPullRequest(input: FixTask) -> CodingState
 }
 
 // ─────────────────────────────── tools ────────────────────────────────
-// All native (Terfyn v0.3.0). read_file/write_file/run_tests are sandboxed to
-// TERFYN_WORKSPACE_ROOT; git.push_branch refuses the default branch and is gated.
+// All native. read_file/write_file/run_tests and the discovery ops are sandboxed to
+// TERFYN_WORKSPACE_ROOT (a ".." escape is rejected); git.push_branch refuses the
+// default branch and is gated. As of v0.4.1 a read that misses (fs.ErrNotExist) is
+// returned to the agent as a recoverable {error: …} observation, not a fatal run
+// failure (#451) — so an agent can probe, miss, and recover within its turn budget.
 
 tool workspace {
     type native
     safety { trusted true   sideEffects true }
+    // Sandbox root + test command may also be declared inline as
+    // `workspace { root "…" testCommand "…" }` (v0.4.1); we keep them in .env
+    // (TERFYN_WORKSPACE_ROOT / TERFYN_WORKSPACE_TEST_COMMAND) so the example stays
+    // portable across checkouts.
     operations {
-        read_file  { effects { workspace.read } }
-        write_file { effects { workspace.write } }
+        read_file  { effects { workspace.read } }   // optional offset/limit = line-range read (#512)
+        list_dir   { effects { workspace.read } }   // directory entries (#452)
+        glob       { effects { workspace.read } }   // path match with ** globstar
+        grep       { effects { workspace.read } }   // RE2 content search → {file, line, text}
+        edit       { effects { workspace.write } }  // surgical str_replace: path/old_string/new_string (#512)
+        write_file { effects { workspace.write } }  // whole-file write (new files / full rewrites)
         run_tests  { effects { process.exec } }
     }
 }
@@ -145,6 +220,7 @@ tool git {
     safety { trusted true   sideEffects true }
     operations {
         create_branch { effects { repository.write } }   // local ref
+        commit        { effects { repository.write } }   // stage + commit the approved changes (local, #528)
         push_branch   { effects { network.write } }      // publication boundary
     }
 }
@@ -157,20 +233,27 @@ policy triage-readonly {
 }
 
 policy coding-agent {
-    execution { maxTotalCostUsd 10   maxWallClockSeconds 600 }
+    // execution.maxIterations (v0.4.5, #522) raises the iteration ceiling above the default
+    // 32 so the Implementer can explore, edit, run tests, and fix within one attempt; wall
+    // clock is raised to match (a full `go test ./...` is ~100s). Cost/wall-clock still bound
+    // genuine runaways, and this ceiling only lifts the per-attempt turn budget.
+    execution { maxTotalCostUsd 10   maxWallClockSeconds 1200   maxIterations 64 }
     effects { permit { workspace.read   workspace.write   process.exec } }
 }
 
 policy reviewer {
     // Read + test only. workspace.write is absent, so the Reviewer cannot reach it.
-    execution { maxTotalCostUsd 5   maxWallClockSeconds 300 }
+    // Ceiling raised (v0.4.5, #522) so a full review + test run fits in one attempt.
+    execution { maxTotalCostUsd 5   maxWallClockSeconds 600   maxIterations 48 }
     effects { permit { workspace.read   process.exec } }
 }
 
 policy publishing {
     // The workflow-level policy: permits non-publishing effects unattended and gates
     // the two publishing operations behind human approval (run suspends, exit 0).
-    execution { maxTotalCostUsd 20   maxWallClockSeconds 900 }
+    // Whole-run budget: Triager + up to 3×(Implementer+Reviewer), each Reviewer running a
+    // ~100s test suite — so the wall clock is generous relative to the per-agent ceilings.
+    execution { maxTotalCostUsd 20   maxWallClockSeconds 3600 }
     approvals {
         requiredFor {
             tool.git.push_branch

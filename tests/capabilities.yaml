@@ -1,9 +1,11 @@
-# Declarative capability invariants (Terfyn v0.3.0, #332) — the design's guarantee,
-# checked offline by `terfyn test` with no model and no code.
+# Declarative capability invariants (Terfyn #332) — the design's guarantee, checked
+# offline by `terfyn test` with no model and no code.
 name: capability-invariants
 assert:
   forbidEffect:
-    # The Reviewer must never be able to write the workspace.
+    # The Reviewer must never be able to write the workspace — even though it now
+    # holds the list_dir/glob/grep discovery grants (#452), those carry only
+    # workspace.read, so no write path exists.
     - agent: Reviewer
       effect: workspace.write
   expectAutonomous:
@@ -12,3 +14,6 @@ assert:
       effect: workspace.write
     - agent: Implementer
       effect: process.exec
+    # The Reviewer may autonomously read (via read_file and the discovery ops).
+    - agent: Reviewer
+      effect: workspace.read

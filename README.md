@@ -1,6 +1,6 @@
 # terfyn-maintainer
 
-A guarded autonomous PR fixer built on [Terfyn](https://github.com/Terfyn/terfyn) **v0.3.1** —
+A guarded autonomous PR fixer built on [Terfyn](https://github.com/Terfyn/terfyn) **v0.4.6** —
 Codex/Claude Code, but the dangerous parts are structurally bounded and reviewable
 **before** execution.
 
@@ -11,20 +11,24 @@ on GitHub. Before anything runs, `terfyn plan` prints exactly how much authority
 agent can exercise — and the runtime enforces that boundary at dispatch, not via the
 prompt.
 
-**There is no code.** The whole program — agents, workflow, tools, and policies — is one
-declarative [`main.agent`](main.agent) file (Terfyn v0.3.0 inline declarations), with the
-agents' prompts in [`prompts/`](prompts). Git branch/push is Terfyn's native adapter; the
-bounded retry is `retry until … limit 3`; the capability guarantee is a declarative test.
+**There is no code, and no YAML.** As of Terfyn v0.4.1, `.agent` is the sole authoring
+surface (ADR 007, #430) — there is no `project.yaml`; the provider and defaults are
+declared inline. The whole program — provider, defaults, agents, workflow, tools, and
+policies — is one declarative [`main.agent`](main.agent) file, with the agents' prompts in
+[`prompts/`](prompts). The agents navigate the target repo with the native `list_dir` /
+`glob` / `grep` discovery ops (v0.4.1, #452) instead of guessing paths, and a read that
+misses is a recoverable observation rather than a fatal run error (#452's companion,
+#451). Git branch/push is Terfyn's native adapter; the bounded retry is
+`retry until … limit 3`; the capability guarantee is a declarative test.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| [`main.agent`](main.agent) | the entire program: Triager / Implementer / Reviewer, the bounded `FixPullRequest` workflow (`retry until … limit 3`), and the inline `tool` + `policy` declarations |
+| [`main.agent`](main.agent) | the entire program: the `provider` + `defaults`, Triager / Implementer / Reviewer, the bounded `FixPullRequest` workflow (`retry until … limit 3`), and the inline `tool` + `policy` declarations |
 | [`prompts/`](prompts) | the agents' prompts (`triager.md` / `implementer.md` / `reviewer.md`), loaded via `instructions file("…")` |
 | [`schemas/`](schemas) | `FixTask` (input) and `CodingState` (loop state) |
 | [`tests/capabilities.yaml`](tests/capabilities.yaml) | declarative capability invariants checked by `terfyn test` |
-| [`project.yaml`](project.yaml) | provider + defaults (nothing to import — it's all inline) |
 | [`issue.json`](issue.json) | the workflow input (owner / repo / number / task) |
 | [`.env.example`](.env.example) | template for `.env` (API key + workspace settings; `.env` is gitignored) |
 | [`scripts/terfyn-maintain.sh`](scripts/terfyn-maintain.sh) | runs `terfyn run`, sourcing `.env` and the input JSON |
@@ -33,7 +37,7 @@ bounded retry is `retry until … limit 3`; the capability guarantee is a declar
 ## Install
 
 ```bash
-go install github.com/Terfyn/terfyn/cmd/terfyn@v0.3.1   # the engine (Go ≥ 1.25) — the only install
+go install github.com/Terfyn/terfyn/cmd/terfyn@v0.4.6   # the engine (Go ≥ 1.25) — the only install
 ```
 
 No project binaries: the workspace, GitHub, and git tools are all native to Terfyn.
@@ -91,9 +95,10 @@ what it's about to publish, then resume:
 scripts/terfyn-maintain.sh --resume <run-id> approve
 ```
 
-`read_file` / `write_file` are confined to `TERFYN_WORKSPACE_ROOT` (a `..` escape is
-rejected), `run_tests` runs only `TERFYN_WORKSPACE_TEST_COMMAND`, `git.push_branch`
-refuses the default branch and is human-gated — so the capability boundary holds at the
-filesystem, the test runner, and the network.
+`read_file` / `write_file` and the `list_dir` / `glob` / `grep` discovery ops are
+confined to `TERFYN_WORKSPACE_ROOT` (a `..` escape is rejected), `run_tests` runs only
+`TERFYN_WORKSPACE_TEST_COMMAND`, `git.push_branch` refuses the default branch and is
+human-gated — so the capability boundary holds at the filesystem, the test runner, and
+the network.
 
 See [DESIGN.md](DESIGN.md) for the full design and threat model.
